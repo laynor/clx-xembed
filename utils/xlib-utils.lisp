@@ -1,0 +1,58 @@
+(in-package :xembed)
+
+(defparameter +last-event+ (array-dimension xlib::*event-key-vector* 0))
+(defvar handlers (make-array +last-event+))
+
+(defun window-resize (window width height)
+  (declare (type window window)
+	   (type card32 width height))
+  (with-state (window)
+    (setf (drawable-width window) width)
+    (setf (drawable-height window) height))
+  (display-finish-output (window-display window)))
+
+(defun handler-pos (event-key)
+  (position event-key xlib::*event-key-vector*))
+
+(defmacro handler-vector (&rest clauses)
+  (let ((res)
+	(handlers (gensym)))
+    (dolist (clause clauses)
+      (destructuring-bind (event-match event-slots &rest handler-body)
+	  clause
+	(let ((eml (if (listp event-match) event-match (list event-match))))
+	  (dolist (em eml)
+	    (push `(setf (svref ,handlers (handler-pos ,em))
+			 #'(lambda (&key ,@event-slots &allow-other-keys)
+			     ,@handler-body))
+		  res)))))
+    `(let ((,handlers (make-array +last-event+ :initial-element #'nullfn)))
+       ,@(reverse res)
+       ,handlers)))
+
+(defun combine-handlers (h1 h2)
+  (assert (and (or (functionp h1) (sequencep h1))
+  	       (or (functionp h2) (sequencep h2))))
+  (cond
+    ((and (sequencep h1) (sequencep h2))
+     (map 'vector #'combine-functions
+	  h1 h2))
+    ((and (functionp h1) (sequencep h2))
+     (map 'vector #'(lambda (hf2)
+		      (combine-functions h1 hf2))
+	  h2))
+    ((and (sequencep h1) (functionp h2))
+     (map 'vector #'(lambda (hf1)
+		      (combine-functions hf1 h2))
+	  h1))
+    ((and (functionp h1) (functionp h2))
+     (combine-functions h1 h2))))
+
+(defun window-parent (win)
+  (multiple-value-bind (children parent root)
+      (query-tree win)
+    (declare (ignore children root))
+    parent))
+
+(defun is-toplevel (win)
+  (window-equal (window-parent win) (drawable-root win)))
