@@ -111,10 +111,10 @@
 (defun xor (x y)
   (and (or x y) (not (and x y))))
 
-(defun move-next-to (el next-to seq &key (where :right) (test #'eql))
+(defun move-next-to-helper (el next-to seq &key (where :right) (test #'eql))
   (if (find el seq :test test)
       (let* ((seq1 (remove el seq :test test))
-	     (next-to-pos  (position next-to seq1 :test test))
+	     (next-to-pos (position next-to seq1 :test test))
 	     (splitpos (and next-to-pos (case where
 					  (:right (1+ next-to-pos))
 					  (:left next-to-pos))))
@@ -122,3 +122,13 @@
 	     (subseq2 (if splitpos (subseq  seq1 splitpos) seq1)))
 	(concatenate (type-of seq) subseq1 (make-sequence (type-of seq) 1 :initial-element el) subseq2))
       seq))
+
+(defun move-next-to (el next-to seq &key (where :right) (test #'eql))
+  (cond ((not (find el seq :test test))
+	 seq)
+	((null next-to)
+	 (case where
+	   (:left (append (remove el seq :test test) (list el)))
+	   (:right (cons el (remove el seq :test test)))))
+	(t (move-next-to-helper el next-to seq :where where :test test))))
+

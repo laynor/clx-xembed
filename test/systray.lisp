@@ -1,8 +1,4 @@
 (in-package :xembed-user)
-(defparameter +icon-height+ 16)
-(defparameter +grow-direction+ :right)
-
-
 
 (defparameter +SYSTEM-TRAY-OPCODES-ALIST+
   '((:SYSTEM-TRAY-REQUEST-DOCK . 0)
@@ -15,76 +11,98 @@
 (defun decode-system-tray-opcode (type)
     (car (rassoc type +SYSTEM-TRAY-OPCODES-ALIST+)))
 
-(defun fchain (fc w what)
-  (let* ((x (cond ((member what '(:xembed-focus-next :next))  1)
-		  ((member what '(:xembed-focus-prev :prev)) -1)
-		  ((integerp what) what)
-		  (t (error "WHAT should be either :next, :prev or an integer number"))))
-	 (idx (mod (+ x (position w fc :test #'window-equal))
-		   (length fc))))
-    (elt fc idx)))
 
-(defun fchain1 (fc w opcode)
-  (case opcode
-    (:xembed-focus-next (values (fchain fc w opcode)
-				:xembed-focus-first))
-    (:xembed-focus-prev (values (fchain fc w opcode)
-				:xembed-focus-last))
-    (:xembed-request-focus (values w :xembed-focus-current))))
-
-(defclass systray ()
-  ((fpw :accessor fpw)
-   (sow :accessor sow)
-   (tlw :accessor tlw)
-   (sel-idx :accessor sel-idx)
-   (sel-win :accessor sel-win)
-   (selection-name :accessor selection-name)
-   (icon-size :accessor icon-size)
-   (handler :accessor handler)
-   (exitp :accessor exitp)
-   (unhidden-icon-ordering :accessor uiordering)
-   (screen :accessor xscreen)
-   (focus :accessor current-focus)
-   (icons :accessor icons)))
-
-(defmethod xdisplay (tray)
-  (window-display (tlw tray)))
-
-(defun client-wm-class (socket)
-  (second (multiple-value-list (get-wm-class (client socket)))))
-(defmethod icon-classes ((tray systray))
-  (mapcar #'client-wm-class
-	  (icons tray)))
-
-(defparameter *tray-config-file* "/tmp/trayconf.lisp")
-
-(defmethod dump-current-ordering ((tray systray))
-  (with-open-file (s *tray-config-file* :direction :output :if-exists :supersede)
-    (print (list :unhidden (uiordering tray)
-		 :hidden nil )
-	   s)))
-
-(defmethod load-config ((tray systray))
-  (with-open-file (s *tray-config-file* :direction :input)
-      (destructuring-bind (&key unhidden hidden)
-	  (read s)
-	(setf (uiordering tray) unhidden))))
+(defclass widget ()
+  ((parent :accessor parent)
+   (win :accessor win)
+   (repaint-p :accessor repaint-p)
+   (handler :accessor handler :initform (handler-vector))
+   (children :accessor children)))
 
 
-(defmethod send-manager-notification ((tray systray))
-  (let ((root-window (drawable-root (tlw tray)))
-	(atom-id (intern-atom (window-display (tlw tray)) (selection-name tray))))
-    (send-event root-window :client-message (make-event-mask :structure-notify)
-		:window root-window
-		:type :MANAGER
-		:format 32
-		:data (vector *timestamp* atom-id (window-id (sow tray)) 0 0)
-		:propgate-p nil)))
+(defgeneric wdisplay (widget)
+  (:documentation "Returns the display of a given WIDGET."))
+(defgeneric wscreen (widget)
+  (:documentation "Returns the screen of a given WIDGET."))
+(defgeneric wroot (widget)
+  (:documentation "Returns the widget's root WINDOW."))
+(defgeneric wmap (widget)
+  (:documentation "Maps the WIDGET."))
+(defgeneric wunmap (widget)
+  (:documentation "Unmaps the WIDGET."))
+(defgeneric wwidth (widget)
+  (:documentation "Returns the WIDGET width in pixels."))
+(defgeneric wheight (widget)
+  (:documentation "Returns the WIDGET height in pixels."))
+(defgeneric wdestroy (widget)
+  (:documentation "Destroys a widget."))
+(defgeneric make-handler (widget)
+  (:documentation "Builds the event handler for a given widget"))
+(defgeneric repaint (widget)
+  (:documentation "Repaints WIDGET"))
 
-(defun tray-selection-name (screen display)
-  (intern 
-   (format nil "_NET_SYSTEM_TRAY_S~a" (xlib::screen-position screen display))
-   'keyword))
+(defmethod wdisplay ((w widget))
+  (window-display (win w)))
+
+(defmethod wscreen ((w widget))
+  (find (drawable-root (win w))
+	(display-roots (wdisplay w))
+	:key #'screen-root
+	:test #'window-equal))
+
+(defmethod wroot ((w widget))
+  (drawable-root (win w)))
+
+(defmethod wmap ((w widget))
+  (map-window (win w)))
+
+(defmethod wunmap ((w widget))
+  (unmap-window (win w)))
+
+(defmethod wwidth ((w widget))
+  (drawable-width (win w)))
+(defmethod (setf wwidth) ((value integer) (w widget))
+  (setf (drawable-width (win w)) value))
+
+(defmethod wheight ((w widget))
+  (drawable-height (win w)))
+(defmethod (setf wheight) ((value integer) (w widget))
+  (setf (drawable-height (win w)) value))
+
+(defmethod wdestroy ((w widget))
+  (destroy-window (win w)))
+
+(defmethod make-handler ((w widget))
+  (handler-vector))
+
+(defclass iconpack (widget)
+  ((swin :accessor swin)
+   (sidx :accessor sidx :initform nil)
+   (icons :accessor icons :initform nil)
+   (icon-height :accessor icon-height :initform 22 :initarg :icon-height)
+   (sel-padding :accessor sel-padding :initform 1 :initarg :sel-padding)
+   (sel-thickness :accessor sel-thickness :initform 2 :initarg :sel-thickness)))
+
+
+(defmethod repaint ((pack iconpack))
+  (setf (repaint-p pack) nil)
+  (let ((x 0))
+    ;;(setf (icons pack) (sort (icons pack) (curry #'icon<= pack)))
+    (dolist (icon (icons pack))
+      (setf (drawable-x icon) x)
+      (incf x (drawable-width icon)))))
+
+(defmethod make-configure-notify-handler ((pack iconpack))
+  #'(lambda (&key event-window window width height &allow-other-keys)
+      (let ((icon-size (icon-height pack)))
+	(when (and (member event-window (icons pack) :test #'window-equal)
+		   (window-equal (client event-window) window))
+	  (dformat 2 "CONFIGURE ~S ~%" (list width height))
+	  (socket-resize event-window
+			 (scale-icon-width icon-size width height)
+			 icon-size)))
+      (setf (repaint-p pack) t)
+      t))
 
 (defun scale-icon-width (icon-size width height)
   (let ((aspect-ratio (if (or (zerop height) (zerop width))
@@ -92,309 +110,262 @@
 			  (/ width height))))
    (ceiling (* icon-size  (max 1 aspect-ratio)))))
 
-(defmethod icon-rank ((tray systray) (socketwin window))
-  (position (client-wm-class socketwin) (uiordering tray) :test #'string=))
-    
+(defmethod make-handler ((ip iconpack))
+  (combine-handlers (handler-vector
+		     ((:configure-notify) (event-window window width height)
+		      (let ((icon-size (icon-height ip)))
+			(when (and (member event-window (icons ip) :test #'window-equal)
+				   (window-equal (client event-window) window))
+			  (dformat 2 "CONFIGURE ~S ~%" (list width height))
+			  (socket-resize event-window
+					 (scale-icon-width icon-size width height)
+					 icon-size)))
+		      (setf (repaint-p ip) t)
+		      t)
+		     ((:client-message) (window type data)
+		      (case type
+			((:_XEMBED)
+			 (let ((opcode (decode-xembed-message-type (elt data 1))))
+			   (when (and (window-equal window (win ip))
+				      (eq opcode :xembed-protocol-finished))
+			     (let ((socket (xlib::lookup-window (wdisplay ip)
+								(elt data 3))))
+			       (setf (icons ip) (remove socket (icons ip)
+							:test #'window-equal))
+			       (destroy-socket socket nil)
+			       (setf (repaint-p ip) nil)
+			       t)))))))
+		    (socket-list-handler-vector #'(lambda () (icons ip)))))
 
-(defmethod icon<= ((tray systray) icon1 icon2)
-  (let ((ir1 (icon-rank tray icon1))
-	(ir2 (icon-rank tray icon2)))
-    (cond ((null ir1) nil)
-	  ((null ir2) t)
-	  ((<= ir1 ir2) t)
-	  (t nil))))
+(defgeneric add-icon (widget icon &key &allow-other-keys)
+  (:documentation "Adds ICON to WIDGET."))
 
-(defmethod repaint ((tray systray))
-  (let ((x 0))
-    (setf (icons tray) (sort (icons tray) (curry #'icon<= tray)))
-    (dolist (icon (icons tray))
-      (setf (drawable-x icon) x)
-      (incf x (drawable-width icon)))))
-
-(defmethod icon-rescale ((tray systray) socketwin clientwin)
-  (let ((icon-size (icon-size tray)))
-    (let ((width (drawable-width clientwin))
-	  (height (drawable-height clientwin)))
-      (socket-resize socketwin
-		     (scale-icon-width icon-size width height)
-		     icon-size))))
-
-(defmethod make-configure-notify-handler ((tray systray))
-  #'(lambda (&key event-window window width height &allow-other-keys)
-      (let ((icon-size (icon-size tray)))
-	(when (and (member event-window (icons tray) :test #'window-equal)
-		   (window-equal (client event-window) window))
-	  (dformat 2 "CONFIGURE ~S ~%" (list width height))
-	  (socket-resize event-window
-			 (scale-icon-width icon-size width height)
-			 icon-size)))
-      (repaint tray)
-      t))
-
-
-
-
-(defmethod destroy ((tray systray))
-  (destroy-window (tlw tray))
-  (destroy-window (fpw tray))
-  (destroy-window (sow tray)))
-
-(defun display-selection-window (tray)
-  (let ((sock (elt (icons tray) (sel-idx tray)))
-	(sel-win (sel-win tray)))
-    (setf (drawable-x sel-win) (drawable-x sock))
-    (setf (drawable-y sel-win) (+ (drawable-y sock) (drawable-height sock)))
-    (window-resize sel-win (drawable-width sock) 3)
-    (map-window sel-win)
-    (setf (window-priority sel-win) :top-if)))
-
-
-(defmethod add-icon ((tray systray) icon-window-id)
-  ;; XEMBED: create socket, embed and activate
-  (let ((sock (create-socket nil (fpw tray) :parent (tlw tray)
-			     :background (xlib:screen-white-pixel (xscreen tray))
-			     :x (* (icon-size tray) (length (icons tray))) :y 0
-			     :width (icon-size tray) :height (icon-size tray)))
-	(tray-icon (xlib::lookup-window (xdisplay tray) icon-window-id)))
-    (xlib::withdraw-window tray-icon (xscreen tray))
-    ;;(icon-rescale tray sock tray-icon)
-    (embed sock tray-icon t 0 0)
+(defmethod add-icon ((pack iconpack) (icon window) &key (pos :tail))
+  (let ((sock (create-socket nil :parent (win pack)
+			     :background :parent-relative
+			     :depth (drawable-depth (win pack))
+			     :x 0 :y 0
+			     :width (icon-height pack) :height (icon-height pack))))
+    (xlib::withdraw-window icon (wscreen pack))
+    (embed sock icon t)
     (map-window sock)
     (map-subwindows sock)
-    ;; Add the icon and update the ordering
-    (setf (icons tray) (append (icons tray) (list sock)))
-    (setf (uiordering tray) (remove-duplicates (append (uiordering tray) (list (client-wm-class sock))) :from-end t :test #'string=))
-    ;;(pushnew sock (icons tray))
+    (setf (repaint-p pack) t)
+    ;; TODO ordering!
+    (case pos 
+      (:tail
+       (setf (icons pack) (append (icons pack) (list sock))))
+      (:head
+       (push sock (icons pack))))
     (socket-activate sock)
     (map-window sock)))
 
+(defparameter +iconpack-event-mask+
+  (make-event-mask :property-change :exposure :enter-window :leave-window))
+
+(defmethod wmap :before ((ip iconpack))
+  (mapc #'map-window (icons ip)))
+
+(defun iconpack-height (iconpack)
+  (+ (icon-height iconpack)
+     (sel-thickness iconpack)
+     (sel-padding iconpack)))
+(defun iconpack-sel-win-y (iconpack)
+  (+ (icon-height iconpack)
+     (sel-padding iconpack)))
+ 
+(defmethod initialize-instance :after ((ip iconpack) &key x y parent sel-color bg-color)
+  (assert (not (null parent)))
+  (let ((root-window (wroot parent)))
+    (setf (win ip) (create-window :parent (win parent)
+				  :x x
+				  :y y
+				  :depth (drawable-depth root-window)
+				  :width (icon-height ip)
+				  :height (iconpack-height ip)
+				  :event-mask +iconpack-event-mask+
+				  :background (alloc-color (window-colormap root-window)
+							   bg-color)))
+    (setf (swin ip) (create-window :parent (win ip) :depth (drawable-depth root-window)
+				   :x 0 :y (iconpack-sel-win-y ip)
+				   :width 1 :height (sel-thickness ip)
+				   :background (alloc-color (window-colormap root-window)
+							    sel-color)))))
+
+(define-condition contents-changed (error)
+  ((widget :initarg :widget)))
+
+(defclass systray (widget)
+  ((vpack :accessor vpack)
+   (selection-name :accessor selection-name)
+   (sow :accessor sow)
+   (fpw :accessor fpw)))
+
+
+(defparameter +systray-event-mask+
+  (make-event-mask :property-change :exposure :enter-window :leave-window))
+(defparameter +systray-fpw-event-mask+
+  (make-event-mask :property-change :key-press :key-release))
+
+(defun calc-tray-length (tray)
+  (calc-ip-length (vpack tray)))
+
+(defmethod repaint ((tray systray))
+  (repaint (vpack tray)))
+
+
+(defmethod add-icon ((tray systray) (icon integer) &key)
+  (let ((iconwin (xlib::lookup-window (wdisplay tray) icon)))
+    (add-icon tray iconwin)))
+
+(defmethod add-icon ((tray systray) (icon window) &key)
+  (add-icon (vpack tray) icon :pos :tail))
+
+(defmethod make-handler #|:after|# ((tray systray))
+  (combine-handlers (make-handler (vpack tray))
+		    (handler-vector
+		     ((:client-message) (type data)
+		      (case type
+			((:_NET_SYSTEM_TRAY_OPCODE)
+			 (format t "POTITA~%")
+			 (destructuring-bind (timestamp message data1 data2 data3)
+			     (coerce data 'list)
+			   (declare (ignorable data2 data3))
+			   (update-timestamp (fpw tray) timestamp)
+			   (let ((opcode (decode-system-tray-opcode message)))
+			     (case opcode
+			       (:system-tray-request-dock
+				(format t "ADDING ICON ~X~%" data1)
+				(add-icon tray data1)
+				t)
+			       (:system-tray-begin-message t)
+			       (:system-tray-cancel-message t))))))))))
+
+(defun tray-selection-name (screen display)
+  (intern 
+   (format nil "_NET_SYSTEM_TRAY_S~a" (xlib::screen-position screen display))
+   'keyword))
+
+(defun send-manager-notification (tray)
+  (let ((root-window (wroot tray))
+	(atom-id (intern-atom (wdisplay tray) (selection-name tray))))
+    (send-event root-window :client-message (make-event-mask :structure-notify)
+		:window root-window
+		:type :MANAGER
+		:format 32
+		:data (vector *timestamp* atom-id (window-id (sow tray)) 0 0)
+		:propgate-p nil)))
+
+
+(define-condition selection-acquisition-error (error)
+  ())
+    
+(defun systray-fdo-init (tray)
+  (change-property (sow tray) :_NET_SYSTEM_TRAY_ORIENTATION #(0)
+		   :_NET_SYSTEM_TRAY_ORIENTATION 32)
+  (setf (selection-name tray) (tray-selection-name (wscreen tray) (wdisplay tray)))
+  (setf (selection-owner (wdisplay tray) (selection-name tray))
+	(sow tray))
+  (when (not (window-equal (selection-owner (wdisplay tray) (selection-name tray))
+			   (sow tray)))
+	(error 'selection-acquisition-error))
+  (update-timestamp (fpw tray))
+  (send-manager-notification tray))
+
   
-(defmethod move-icon ((tray systray) where fn)
-  (let ((icon-class (client-wm-class (elt (icons tray) (sel-idx tray))))
-	(prev-class (client-wm-class (elt (icons tray) (mod (funcall fn (sel-idx tray)) (length (icons tray)))))))
-    (setf (sel-idx tray) (funcall fn (sel-idx tray)))
-    (setf (uiordering tray)
-	  (move-next-to icon-class prev-class (uiordering tray) :test #'equalp :where where))))
-(defmethod move-icon-left ((tray systray))
-  (move-icon tray :left #'1-))
-(defmethod move-icon-right ((tray systray))
-  (move-icon tray :right #'1+))
-	
 
-(defmethod make-handler-vector ((tray systray))
-  (declare (optimize (debug 3) (speed 0)))
+(defmethod initialize-instance :after ((tray systray)
+				       &key screen x y (sel-padding 1) (sel-thickness 2)
+				       (sel-color (make-color :red 0 :green 1 :blue 0))
+				       (vpack-bg-color (make-color :red 0.5 :green 0.5
+								   :blue 0.5))
+				       (bg-color (make-color :red 1 :green 1 :blue 1))
+				       (icon-height 22))
+  (let ((root-window (screen-root screen)))
+    (setf (win tray) (create-window :parent (screen-root screen)
+				    :x x
+				    :y y
+				    :width 1
+				    :depth (drawable-depth root-window)
+				    :height 1
+				    :background (alloc-color (window-colormap root-window)
+							     bg-color)
+				    :event-mask +systray-event-mask+))
+    (setf (fpw tray) (create-window :parent (win tray)
+				    :x -1 :y -1
+				    :width 1 :height 1
+				    :event-mask +systray-fpw-event-mask+))
+    (setf (sow tray) (create-window :parent (win tray)
+				    :x -1 :y -1
+				    :width 1 :height 1))
+    (setf (vpack tray) (make-instance 'iconpack :x 0 :y 0 :parent tray :sel-color sel-color
+				      :sel-thickness sel-thickness :sel-padding sel-padding
+				      :bg-color vpack-bg-color
+				      :icon-height icon-height))
+    (setf (wwidth tray) (wwidth (vpack tray)))
+    (setf (wheight tray) (wheight (vpack tray)))
+    (systray-fdo-init tray)))
+
+
+
+(defmethod wmap :before ((tray systray))
+  (map-window (fpw tray))
+  (map-window (sow tray))
+  (wmap (vpack tray)))
+
+
+(define-condition application-window-closed (error)
+  ())
+
+(defun basic-app-event-handler (display app-window focus-proxy)
   (handler-vector
-   ((:key-press)(code sequence time event-window child root-x root-y x y state same-screen-p event-key)
-    (when (window-equal event-window (fpw tray))
-      (case (keycode->character (xdisplay tray) code state)
-	(#\p (dformat 2 "Ordering : ~S" (icon-classes tray))
-	     t)
-	(#\d (dump-current-ordering tray)
-	     t)
-	(#\L (dformat 2 "Loading tray-info..")
-	     (load-config tray)
-	     (repaint tray)
-	     (dformat 2 "OK.~%")
-	     t)
-	(#\v (cond ((sel-idx tray)
-		    (unmap-window (sel-win tray))
-		    (setf (sel-idx tray) nil))
-		   (t (setf (sel-idx tray) 0)
-		      (display-selection-window tray)))
-	     t)
-	(#\h (when (sel-idx tray)
-	       (setf (sel-idx tray) (mod (1- (sel-idx tray)) (length (icons tray))))
-	       (display-selection-window tray))
-	     t)
-	(#\l (when (sel-idx tray)
-	       (setf (sel-idx tray) (mod (1+ (sel-idx tray)) (length (icons tray))))
-	       (display-selection-window tray))
-	     t)
-	(#\j (when (sel-idx tray)
-	       (dformat 2 "moving icon~%")
-	       (move-icon-left tray)
-	       (dump-current-ordering tray)
-	       (display-selection-window tray)
-	       (repaint tray)))
-	(#\k (when (sel-idx tray)
-	       (dformat 2 "moving icon~%")
-	       (move-icon-right tray)
-	       (dump-current-ordering tray)
-	       (display-selection-window tray)
-	       (repaint tray)))
-	(otherwise (when (and (current-focus tray) (client (current-focus tray)))
-		     (send-event (client (current-focus tray)) event-key nil
-				 :code code :sequence sequence :time time :window (client (current-focus tray))
-				 :child child :root-x root-x :root-y root-y :x x :y y :state state
-				 :same-screen-p same-screen-p)
-		     t)))))
-
-		 
-   ((:key-release) (code sequence time event-window child root-x root-y x y state same-screen-p event-key)
-    (when (and (current-focus tray) (client (current-focus tray)))
-      (send-event (client (current-focus tray)) event-key nil
-		  :code code :sequence sequence :time time :window (client (current-focus tray))
-		  :child child :root-x root-x :root-y root-y :x x :y y :state state
-		  :same-screen-p same-screen-p)
-      t))
-   ((:client-message) (window type format data)
-    (declare (ignorable format))
+   ((:client-message) (window type data)
     (case type
       ((:WM_PROTOCOLS)
-       (when (window-equal window (tlw tray))
-	 (let ((protocol-name (atom-name (xdisplay tray) (elt data 0)))
-	       (timestamp (elt data 1)))
+       (let ((protocol-name (atom-name display (elt data 0)))
+	     (timestamp (elt data 1)))
+	 (when (window-equal app-window window)
 	   (case protocol-name
-	     (:WM_DELETE_WINDOW (setf (exitp tray) t))
-	     (:WM_TAKE_FOCUS (update-timestamp (tlw tray) timestamp)
-			     (handler-case
-				 (progn (set-input-focus (xdisplay tray) (fpw tray) :parent timestamp)
-					(display-finish-output (xdisplay tray))
-					t)
-			       (xlib::x-error () (error "SET-INPUT-FOCUS failed"))))))))
-      ((:_XEMBED)
-       (when (window-equal window (tlw tray))
-	 (let ((opcode (decode-xembed-message-type (elt data 1))))
-	   (case opcode
-	     (:xembed-protocol-finished
-	      (dformat 2 "PROTOCOL FINISHED MESSAGE ~%")
-	      (let ((socket (xlib::lookup-window (xdisplay tray) (elt data 3))))
-		(dformat 2 "REMOVE ICON: ~x~%" (elt data 2))
-		(setf (icons tray) (remove socket (icons tray) :test #'window-equal))
-		(destroy-socket socket nil)
-		(repaint tray)
-		t))))))
-	       
-      ((:_NET_SYSTEM_TRAY_OPCODE)
-       (destructuring-bind (timestamp message data1 data2 data3)
-	   (coerce data 'list)
-	 (update-timestamp (tlw tray) timestamp)
-	 (let ((opcode (decode-system-tray-opcode message)))
-	   (dformat 2 "TRAY-MESSAGE[~S](~S)~%" window opcode)
-	   (case opcode
-	     (:system-tray-request-dock
-	      (add-icon tray data1)
-	      (dump-current-ordering tray)
-	      ;;(unmap-systray tray)
-	      ;;(map-systray tray)
-	      (repaint tray))
-	     (:system-tray-begin-message t)
-	     (:system-tray-cancel-message t)))))))))
+	     ((:WM_DELETE_WINDOW)
+	      (error 'application-window-closed))
+	     ((:WM_TAKE_FOCUS)
+	      (handler-case
+		  (progn (set-input-focus display focus-proxy :parent timestamp)
+			 (display-finish-output display)
+			 t)
+		(xlib::x-error () (error "SET-INPUT-FOCUS failed"))))))))))))
 
-(defmethod initialize-instance ((tray systray) &key screen (x 0) (y 0) (icon-size 16) background)
-  (setf (sel-idx tray) nil)
-  (setf (icon-size tray) icon-size)
-  (setf (exitp tray) nil)
-  (setf (icons tray) nil)
-  (setf (current-focus tray) nil)
-  (setf (xscreen tray) screen)
-  (setf (uiordering tray) nil)
-  (when (probe-file *tray-config-file*)
-    (load-config tray))
-  (let* ((root-window (screen-root screen))
-	 (display (window-display root-window)))
-    (setf (selection-name tray) (tray-selection-name screen display))
-    (dformat 2 "CREATING WINDOWS..")
-    (handler-case
-	(progn 
-	  (let* ((depth (print (drawable-depth root-window)))
-		 (red-pixel (alloc-color (window-colormap root-window) (make-color :red 1 :green 0 :blue 0))))
-	    (setf (tlw tray) (create-window :parent root-window
-					    :x x :y y :width icon-size  :height icon-size :background background
-					    :event-mask (make-event-mask :property-change :exposure :enter-window :leave-window)))
-	    (setf (fpw tray) (create-window :parent (tlw tray)
-					    :x -1 :y -1 :width 1 :height 1
-					    :event-mask (make-event-mask :property-change :key-press :key-release)))
-	    (setf (sow tray) (create-window :parent (tlw tray)
-					    :x -1 :y -1 :width 1 :height 1))
-	    (setf (sel-win tray) (create-window :depth depth :parent (tlw tray) :x 0 :y 0 :width 1 :height 1 :background red-pixel
-						:border-width 0 :border red-pixel))
-	    (setf (wm-protocols (fpw tray)) '(:WM_TAKE_FOCUS))
-	    (setf (wm-protocols (tlw tray)) '(:WM_DELETE_WINDOW :WM_TAKE_FOCUS))
-	    (display-finish-output display)))
-	  (x-error () (error "Error during tray creation.")))
-      (dformat 2 "OK.~%SETTING SELECTION..")
-      (change-property (sow tray) :_NET_SYSTEM_TRAY_ORIENTATION #(0) :_NET_SYSTEM_TRAY_ORIENTATION 32)
-      (setf (selection-owner display (selection-name tray))
-	(sow tray))
-      (when (not (window-equal (selection-owner display (selection-name tray))
-			       (sow tray)))
-	(destroy tray)
-	(error "Couldn't get the selection"))
-      (dformat 2 "OK.~%UPDATING TIMESTAMP..")
-      (update-timestamp (fpw tray))
-      (dformat 2 "OK.~%SENDING MANAGER NOTIFICATION..")
-      (send-manager-notification tray)
-      (dformat 2 "OK.~%SETTING EVENT HANDLERS..")
-      (let ((iconlist-event-handler-vector
-	     (socket-list-handler-vector #'(lambda () (icons tray)))))
-	(setf (svref iconlist-event-handler-vector (handler-pos :configure-notify))
-	      (make-configure-notify-handler tray))
-	(setf (handler tray) (combine-handlers iconlist-event-handler-vector
-					       (make-handler-vector tray))))
-      (dformat 2 "OK.~%")))
-  
+(defvar *systray*)
 
-
-(defun unmap-systray (systray)
-  (mapc #'map-window (list (tlw systray) (sow systray) (fpw systray))))
-(defun map-systray (systray)
-  (map-window (tlw systray))
-  (map-window (sow systray))
-  (map-window (fpw systray)))
-
-(defvar *systray* nil)
-(defun start-systray (&optional icon-size (host ""))
+(defun start-systray (&optional (host ""))
   (dformat 2 "SCHIFO~%")
   (let* ((display (open-display host))
 	 (screen (print (first (display-roots display))))
 	 ;; (black (xlib:screen-black-pixel screen))
-	 (white (xlib:screen-white-pixel screen))
-	 (tray (make-instance 'systray :icon-size icon-size :background white :screen screen)))
+	 (tray (make-instance 'systray :x 0 :y 0 :screen screen))
+	 (hnd (combine-handlers (basic-app-event-handler display (win tray) (fpw tray))
+				(make-handler tray)))
+	 (exit nil))
+    (format t "Starting tray~%")
     (setf *systray* tray)
-    (map-systray tray)
+    (setf (wm-protocols (win tray))
+	  (remove-duplicates (append (list :WM_TAKE_FOCUS :WM_DELETE_WINDOW)
+				     (wm-protocols (win tray)))))
+    (setf (wm-protocols (fpw tray))
+	  (remove-duplicates (append (list :WM_TAKE_FOCUS :WM_DELETE_WINDOW)
+				     (wm-protocols (fpw tray)))))
+    (format t "Mapping~%")
+    (wmap tray)
+    (format t "Entering Loop~%")
     (do ()
-	((exitp tray))
-      (display-finish-output display)
-      (process-event display :discard-p t :handler (handler tray)))
-    (when (exitp tray)
-      (destroy tray)
+	(exit)
+      (format t "#############################################~%")
+      (handler-case 
+	  (progn
+	    (display-finish-output display)
+	    (process-event display :discard-p t :handler hnd))
+	(application-window-closed () (setf exit t))
+	(contents-changed (ip) (repaint tray))))
+    (when exit
+      (wdestroy tray)
       (close-display display))))
-
-	   ;; (handlers (handler-vector
-	   ;; 	      (:exposure () t)
-	   ;; 	      ((:key-press :key-release) (code sequence time event-window child root-x root-y x y state same-screen-p event-key)
-	   ;; 	       (when (and (client current-focus) (window-equal event-window focus-proxy-window))
-	   ;; 		 (send-event (client current-focus) event-key nil
-	   ;; 			     :code code :sequence sequence :time time :window (client current-focus)
-	   ;; 			     :child child :root-x root-x :root-y root-y :x x :y y :state state
-	   ;; 			     :same-screen-p same-screen-p))
-	   ;; 	       t)
-	   ;; 	      ((:enter-notify :leave-notify) (window kind event-key)
-	   ;; 	       (when (and (window-equal window toplevel-window)
-	   ;; 			  (not (eq kind :inferior)))
-	   ;; 		 (format t "ENTER(~a)~%" kind)
-	   ;; 		 (mapc (case event-key
-	   ;; 			 (:enter-notify #'socket-activate)
-	   ;; 			 (:leave-notify #'socket-deactivate))
-	   ;; 		       focus-chain)))
-	   ;; 	      ((:client-message) (window type data)
-	   ;; 	       (format t "CLIENT MESSAGE[~S, ~S]:: " type window)
-	   ;; 	       (case type
-	   ;; 		 (:_XEMBED
-	   ;; 		  (let ((client (client window))
-	   ;; 			(timestamp (elt data 0))
-	   ;; 			(opcode (decode-xembed-message-type (elt data 1)))
-	   ;; 			(detail (decode-xembed-detail (elt data 2)))
-	   ;; 			(data1 (elt data 3))
-	   ;; 			(data2 (elt data 4)))
-	   ;; 		    (update-timestamp focus-proxy-window timestamp)
-	   ;; 		    (case opcode
-	   ;; 		      ((:xembed-focus-next :xembed-focus-prev :xembed-request-focus)
-	   ;; 		       (when (member window focus-chain :test #'window-equal)
-	   ;; 			 (multiple-value-bind (next-focus detail)
-	   ;; 			     (fchain1 focus-chain window opcode)
-	   ;; 			   (socket-focus-out current-focus)
-	   ;; 			   (setf current-focus next-focus)
-	   ;; 			   (socket-focus-in current-focus detail)
-	   ;; 			   t))))))))))

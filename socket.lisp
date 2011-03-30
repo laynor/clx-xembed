@@ -1,7 +1,7 @@
 (in-package :xembed)
 
 ;;; Property :XEMBED-SOCKET-INFO
-;;; (use-client-geometry focus-proxy protocol-started-p modality active focused)
+;;; (use-client-geometry protocol-started-p modality active focused)
 (defparameter +xembed-socket-info-flags-alist+
   '((1 . :use-client-geometry-p)
     (2 . :protocol-started-p)
@@ -13,13 +13,10 @@
 
 
 (defun xsi-flags (xsi)
-  (second xsi))
-(defun xsi-focus-proxy (xsi)
   (first xsi))
 
 (defun xsi-setflags (xsi &rest keyword-value-pairs &key &allow-other-keys)
-  (list (xsi-focus-proxy xsi)
-	(apply #'setflags (xsi-flags xsi) +xembed-socket-info-flags-alist+ keyword-value-pairs)))
+  (list (apply #'setflags (xsi-flags xsi) +xembed-socket-info-flags-alist+ keyword-value-pairs)))
 
 (defun xsi-getflag (xsi key)
   (getflag key (xsi-flags xsi) +xembed-socket-info-flags-alist+))
@@ -27,14 +24,11 @@
 (defun xembed-socket-info (window)
   (let ((prop (get-property window :XEMBED-SOCKET-INFO)))
     (when prop
-      (list (xlib::lookup-window (window-display window)
-				 (first prop))
-	    (second prop)))))
+      (list (first prop)))))
 
 
 (defun (setf xembed-socket-info) (value window)
-  (change-property window :XEMBED-SOCKET-INFO (list (window-id (xsi-focus-proxy value))
-						    (xsi-flags value))
+  (change-property window :XEMBED-SOCKET-INFO (list (xsi-flags value))
 		   :XEMBED-SOCKET-INFO 32))
 
 (defparameter +socket-event-mask+
@@ -42,12 +36,11 @@
 		    :leave-window :button-press 
 		    :property-change))
 
-(defun create-socket (use-client-geometry focus-proxy &rest key-value-pairs &key &allow-other-keys)
+(defun create-socket (use-client-geometry &rest key-value-pairs &key &allow-other-keys)
   (let* ((em (get-keyword-value :event-mask key-value-pairs))
 	 (em1 (logior +socket-event-mask+ (or em 0)))
 	 (sockwin (apply #'create-window (subst-keyword-value :event-mask em1 key-value-pairs))))
-    (let ((xsi (list focus-proxy
-		     0)))
+    (let ((xsi (list 0)))
       (setf (xembed-socket-info sockwin) (xsi-setflags xsi :use-client-geometry-p use-client-geometry)))
     sockwin))
 	  
