@@ -6,6 +6,7 @@
 
 (defmacro defsystray ()
   '(defstruct (tray)
+    resize-main-window-p
     win
     sowin
     fpwin
@@ -30,9 +31,9 @@
 (defsystray)
 
 (defparameter +tray-win-event-mask+
-  (make-event-mask))
+  (make-event-mask :property-change :key-press :key-release))
 (defparameter +tray-fpwin-event-mask+
-  (make-event-mask :key-press :key-release))
+  (make-event-mask :key-press :key-release :property-change))
 (defparameter +tray-sowin-event-mask+
   (make-event-mask))
 
@@ -79,7 +80,7 @@
      ,@body))
 
 (defun make-systray (display screen parent
-		     &key (x 0) (y 0) custom-config)
+		     &key (x 0) (y 0) (resize-main-window-p nil) custom-config)
   (with-config-items ((append +tray-default-config+ (first custom-config))
 		      iheight sthickness spadding win-bg viwin-bg hiwin-bg swin-bg
 		      icon-bg)
@@ -117,7 +118,8 @@
 		     :hidden-classes (fourth custom-config)
 		     :dpy display :scn screen :show-hiwin-p t :icon-bg icon-bg
 		     :spadding spadding :sthickness sthickness :swin swin
-		     :sidx nil :config (first custom-config)))))))
+		     :sidx nil :config (first custom-config)
+		     :resize-main-window-p resize-main-window-p))))))
 
 
 (defun map-systray (systray)
@@ -125,6 +127,7 @@
   (map-window (tray-fpwin systray))
   (map-window (tray-sowin systray))
   (map-window (tray-viwin systray))
+  (update-timestamp (tray-fpwin systray))
   (if (tray-sidx systray)
       (map-window (tray-swin systray))
       (unmap-window (tray-swin systray)))
@@ -230,10 +233,11 @@
   (setf (tray-show-hiwin-p systray) (or (tray-show-hiwin-p systray) (tray-sidx systray)))
   (update-icon-packs-geometry systray)
   (update-swin-geometry systray)
-  (setf (drawable-width (tray-win systray))
-	(tray-width systray))
-  (setf (drawable-height (tray-win systray))
-	(systray-height systray)))
+  (when (tray-resize-main-window-p systray)
+    (setf (drawable-width (tray-win systray))
+	  (tray-width systray))
+    (setf (drawable-height (tray-win systray))
+	  (systray-height systray))))
 
     
 (defun update-systray (systray &optional (map-p t))
@@ -316,7 +320,7 @@
 	((:WM_PROTOCOLS)
 	 (let ((protocol-name (atom-name display (elt data 0)))
 	       (timestamp (elt data 1)))
-	   (when (window-equal app-window window)
+	   (when (some (curry #'window-equal window) (list app-window focus-proxy))
 	     (case protocol-name
 	       ((:WM_DELETE_WINDOW)
 		(error 'close-window-requested))
@@ -527,7 +531,8 @@
 (defun make-test-handler (systray)
   (handler-vector
    ((:key-press)(event-window state code)
-    (when (window-equal event-window (tray-fpwin systray))
+    (when (some (curry #'window-equal event-window)
+		(list (tray-win systray) (tray-fpwin systray)))
       (let* ((char (keycode->character (tray-dpy systray) code state))
 	     (fn (cdr (assoc char *test-bindings* :test #'equalp))))
 	(when fn (funcall fn systray char)))))))
@@ -605,6 +610,7 @@
 	(do () (nil)
 	  (display-finish-output display)
 	  (process-event display :discard-p t :handler hnd)
+	  (print (input-focus display))
 	  )
       (close-window-requested ()
 	(destroy-tray systray)
