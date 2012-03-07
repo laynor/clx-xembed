@@ -9,4 +9,3 @@
 	       (:file "xembed-core")
 	       (:file "socket")))
 
-

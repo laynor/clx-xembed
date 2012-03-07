@@ -1,4 +1,3 @@
-(asdf::compute-source-registry)
 (require :xembed)
 (defpackage :test-systray
   (:use #:cl #:xembed #:xlib #:asdf))
@@ -6,31 +5,30 @@
 (in-package :test-systray)
 
 
-(defmacro defsystray ()
-  '(defstruct (tray)
-    resize-main-window-p
-    win
-    sowin
-    fpwin
-    viwin
-    hiwin
-    vicons
-    hicons
-    swin
-    sidx
-    dpy
-    scn
-    iheight
-    spadding
-    sthickness
-    show-hiwin-p
-    icon-bg
-    hidden-classes
-    vicons-ordering
-    hicons-ordering
-    config))
+(defstruct (tray)
+  resize-main-window-p
+  position
+  win
+  sowin
+  fpwin
+  viwin
+  hiwin
+  vicons
+  hicons
+  swin
+  sidx
+  dpy
+  scn
+  iheight
+  spadding
+  sthickness
+  show-hiwin-p
+  icon-bg
+  hidden-classes
+  vicons-ordering
+  hicons-ordering
+  config)
 
-(defsystray)
 
 (defparameter +tray-win-event-mask+
   (make-event-mask :property-change :key-press :key-release))
@@ -50,8 +48,9 @@
     (:hiwin-bg .   ,(make-color :red 0.6 :green 0.6 :blue 0.6))
     (:icon-bg  .   ,(make-color :red 0.9 :green 0.9 :blue 0.9))
     (:swin-bg  .   ,(make-color :red 1 :green 0 :blue 0))
-    (:iheight  .   22)
+    (:iheight  .   16)
     (:spadding .   1)
+    (:position .   :right)
     (:sthickness . 2)))
 
 (defun config-file-name ()
@@ -85,7 +84,7 @@
 		     &key (x 0) (y 0) (resize-main-window-p nil) custom-config)
   (with-config-items ((append +tray-default-config+ (first custom-config))
 		      iheight sthickness spadding win-bg viwin-bg hiwin-bg swin-bg
-		      icon-bg)
+		      icon-bg position)
     (let* ((root-window (drawable-root parent))
 	   (depth (drawable-depth root-window))
 	   (tray-height (calculate-tray-height iheight spadding sthickness))
@@ -121,6 +120,7 @@
 		     :dpy display :scn screen :show-hiwin-p t :icon-bg icon-bg
 		     :spadding spadding :sthickness sthickness :swin swin
 		     :sidx nil :config (first custom-config)
+                     :position position
 		     :resize-main-window-p resize-main-window-p))))))
 
 
@@ -239,7 +239,12 @@
     (setf (drawable-width (tray-win systray))
 	  (tray-width systray))
     (setf (drawable-height (tray-win systray))
-	  (systray-height systray))))
+	  (systray-height systray)))
+  (when (eq (tray-position systray) :right)
+    (setf (drawable-x (tray-win systray))
+          (- (drawable-width (window-parent (tray-win systray)))
+             (tray-width systray)))))
+  
 
     
 (defun update-systray (systray &optional (map-p t))
@@ -474,7 +479,7 @@
 	 (coerce data 'list)
        (update-timestamp (tray-fpwin systray) timestamp)
        (let ((opcode (decode-system-tray-opcode message)))
-	 (dformat 2 "TRAY-MESSAGE[~S](~S)~%" window opcode)
+	 (dformat 0 "TRAY-MESSAGE[~S](~S)~%" window opcode)
 	 (case opcode
 	   (:system-tray-request-dock
 	    (add-icon systray data1)
@@ -529,6 +534,7 @@
 (def-testbinding #\d #'(lambda (systray &rest args)
 			 (declare (ignorable args))
 			 (dump-config systray)))
+
 
 (defun make-test-handler (systray)
   (handler-vector
@@ -629,6 +635,49 @@
 	(destroy-tray systray)
 	(close-display display)))))
 
+(stumpwm:defcommand systray () ()
+  (ensure-config-file-exists)
+  (let* ((display stumpwm:*display*)
+	 (screen (slot-value (stumpwm:current-screen) 'number))
+	 (root-window (screen-root screen))
+	 (conf (read-config))
+         (mlw (stumpwm::mode-line-window
+               (stumpwm::head-mode-line
+                (stumpwm::current-head))))
+	 (systray (make-systray display screen mlw :x 100 :resize-main-window-p t :custom-config conf))
+	 (hnd (make-systray-handler systray)))
+    (setf *systray* systray)
+    (init-systray systray)
+    (map-systray systray)
+    (stumpwm::add-hook stumpwm:*event-processing-hook*
+                       (lambda ()
+                         (loop while (process-event stumpwm::*display* :timeout 0 :handler hnd))))))
 
+(stumpwm:defcommand systray-toggle-hidden () ()
+  (cond ((tray-show-hiwin-p *systray*)
+         (hide-hiwin *systray*))
+        (t (show-hiwin *systray*))))
 
+(stumpwm:defcommand systray-selection-left () ()
+  (let ((idx (tray-sidx *systray*)))
+    (setf (tray-sidx *systray*) (1+ (or idx -1)))
+    (update-systray *systray*)))
 
+(stumpwm:defcommand systray-selection-right () ()
+  (let ((idx (tray-sidx *systray*)))
+    (setf (tray-sidx *systray*) (1- (or idx 0)))
+    (update-systray *systray*)))
+
+(stumpwm:defcommand systray-toggle-icon-hiding () ()
+  (toggle-icon-hiding *systray* (icon-at-sel *systray*))
+  (update-systray *systray*))
+
+(stumpwm:defcommand systray-move-icon-left () ()
+  (move-icon *systray* :left)
+  (update-systray *systray*))
+(stumpwm:defcommand systray-move-icon-right () ()
+  (move-icon *systray* :right)
+  (update-systray *systray*))
+
+(stumpwm:defcommand systray-dump-config () ()
+  (dump-config *systray*))
