@@ -1,3 +1,5 @@
+;;;; FIXME: make it work with multiple heads
+(asdf:compute-source-registry)
 (require :xembed)
 (defpackage :test-systray
   (:use #:cl #:xembed #:xlib #:asdf))
@@ -6,6 +8,7 @@
 
 
 (defstruct (tray)
+  state
   resize-main-window-p
   position
   win
@@ -146,7 +149,6 @@
 	  (max (tray-iheight systray)
 	       (reduce #'+ (tray-hicons systray) :key #'drawable-width))))
 
-
 (defun tile-systray-icons (systray)
   (tile-icons (tray-hicons systray))
   (tile-icons (tray-vicons systray)))
@@ -227,7 +229,6 @@
     (if (tray-show-hiwin-p systray)
 	(+ viwin-width hiwin-width)
 	viwin-width)))
-  
 
 (defun update-windows-geometry (systray)
   (sort-systray-icons systray)
@@ -244,9 +245,7 @@
     (setf (drawable-x (tray-win systray))
           (- (drawable-width (window-parent (tray-win systray)))
              (tray-width systray)))))
-  
-
-    
+ 
 (defun update-systray (systray &optional (map-p t))
   (update-windows-geometry systray)
   (when map-p
@@ -266,7 +265,6 @@
   (intern 
    (format nil "_NET_SYSTEM_TRAY_S~a" (xlib::screen-position screen display))
    'keyword))
-
 
 ;;; TODO check for errors in this function
 (defun set-tray-property (systray)
@@ -303,7 +301,6 @@
 	(list (tray-win systray)
 	      (tray-fpwin systray))))
   
-
 (defun init-app-mode-systray (systray appmode)
   (let ((traywin (tray-win systray)))
     (setf (wm-protocols traywin)
@@ -656,7 +653,8 @@
 (stumpwm:defcommand systray-toggle-hidden () ()
   (cond ((tray-show-hiwin-p *systray*)
          (hide-hiwin *systray*))
-        (t (show-hiwin *systray*))))
+        (t
+	 (show-hiwin *systray*))))
 
 (stumpwm:defcommand systray-selection-left () ()
   (let ((idx (tray-sidx *systray*)))
@@ -681,3 +679,79 @@
 
 (stumpwm:defcommand systray-dump-config () ()
   (dump-config *systray*))
+
+(defvar *head-systray-table* (make-hash-table))
+(defmacro head-systray (head)
+  `(gethash ,head *head-systray-table*))
+
+  ;; (ensure-config-file-exists)
+  ;; (let* ((display stumpwm:*display*)
+  ;; 	 (screen (slot-value (stumpwm:current-screen) 'number))
+  ;; 	 (root-window (screen-root screen))
+  ;; 	 (conf (read-config))
+  ;;        (mlw (stumpwm::mode-line-window
+  ;;              (stumpwm::head-mode-line
+  ;;               (stumpwm::current-head))))
+  ;; 	 (systray (make-systray display screen mlw :x 100 :resize-main-window-p t :custom-config conf))
+  ;; 	 (hnd (make-systray-handler systray)))
+  ;;   (setf *systray* systray)
+  ;;   (init-systray systray)
+  ;;   (map-systray systray)
+  ;;   (stumpwm::add-hook stumpwm:*event-processing-hook*
+  ;;                      (lambda ()
+  ;;                        (loop while (process-event stumpwm::*display* :timeout 0 :handler hnd))))))
+
+(defun create-systray ()
+  (let* ((display stumpwm:*display*)
+  	 (screen (slot-value (stumpwm:current-screen) 'number))
+  	 (root-window (screen-root screen))
+  	 (conf (read-config))
+  	 (systray (make-systray display screen root-window
+				:x 100 :y -100
+				:resize-main-window-p t :custom-config conf))
+  	 (hnd (make-systray-handler systray)))
+    (setf (head-systray (stumpwm::current-head)) systray)
+    (init-systray systray)
+    (map-systray systray)
+    (setf (tray-state systray) :hidden)
+    (stumpwm::add-hook stumpwm:*event-processing-hook*
+		       (lambda ()
+			 (loop while (process-event stumpwm::*display* :timeout 0 :handler hnd))))))
+
+(defun toggle-systray ()
+  (let* ((display stumpwm:*display*)
+  	 (screen (slot-value (stumpwm:current-screen) 'number))
+  	 (root-window (screen-root screen))
+	 (systray (head-systray (stumpwm:current-head))))
+    (case (tray-state systray)
+      (:visible (setf (tray-state systray) :hidden)
+		(xlib:reparent-window (tray-win systray) root-window
+				      0 -100))
+      (:hidden (setf (tray-state systray) :visible)
+	       (xlib:reparent-window (tray-win systray)
+				     (stumpwm::mode-line-window
+				      (stumpwm::head-mode-line
+				       (stumpwm::current-head)))
+				     0
+				     0)
+	       (map-systray systray)))))
+
+;;   (setf *systray* systray)
+;;   (init-systray systray)
+;;   (map-systray systray)
+;;   (stumpwm::add-hook stumpwm:*event-processing-hook*
+;;                      (lambda ()
+;;                        (loop while (process-event stumpwm::*display* :timeout 0 :handler hnd))))))
+ 
+(stumpwm:defcommand mode-line-tray () ()
+  (let ((head (stumpwm:current-head)))
+    (when (null (head-systray head))
+      (create-systray))
+    (case (tray-state (head-systray head))
+      (:visible (when (stumpwm::head-mode-line head)
+		  (toggle-systray)
+		  (stumpwm::run-commands "mode-line")))
+      (:hidden (when (null (stumpwm::head-mode-line head))
+		 (stumpwm::run-commands "mode-line")
+		 (toggle-systray))))))
+ 
