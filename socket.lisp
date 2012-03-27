@@ -161,6 +161,7 @@
 
 (defun destroy-socket (socketwin &optional (reparent-p t))
   (when (and reparent-p (client socketwin))
+    (unmap-window (client socketwin))
     (reparent-window (client socketwin)
 		     (drawable-root socketwin)
 		     0 0))
