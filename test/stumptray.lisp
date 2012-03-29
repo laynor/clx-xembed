@@ -5,10 +5,8 @@
 ;;;; TODO Do something about the errors that happen when resuming from
 ;;;; hibernation
 
-;;;; TODO Get rid of *systray* global var and replace with per-screen
-;;;; systray selection
-
-;;;; TODO Modify the modeline command or add a 
+;;;; TODO Modify the modeline command or add a wrapper to start the
+;;;; tray together with the modeline
 
 (asdf:compute-source-registry)
 (declaim (optimize (speed 0) (debug 3) (safety 3)))
@@ -68,12 +66,14 @@ screen - and returns the head that will contain the tray. Selects the
 first on the list by default.")
 
 (defmacro screen-tray (screen)
-  `(gethash *screen-tray-table* ,screen))
+  `(gethash ,screen *screen-tray-table*))
 (defun screen-mode-line (screen)
   "Returns the mode-line that will contain the tray for SCREEN."
   (stumpwm::head-mode-line 
    (funcall *tray-head-selection-fn* 
 	    (stumpwm::screen-heads screen))))
+(defun current-tray ()
+  (screen-tray (stumpwm:current-screen)))
 
 ;;;; Tray appearance
 ;;; Dimensions The tray height depends on the modeline height. In
@@ -177,7 +177,8 @@ window coordinates.")
     (ignore-errors (xembed:destroy-socket socket)))
   (dolist (socket (tray-hicons tray))
     (ignore-errors (xembed:destroy-socket socket)))
-  (xlib:destroy-window (tray-win tray)))
+  (xlib:destroy-window (tray-win tray))
+  (setf (screen-tray (tray-screen tray)) nil))
   
 
 ;;; Tray mapping
@@ -629,62 +630,61 @@ passed to `xlib:process-event'."
   (xembed-tray-init tray)
   (tray-update tray nil))
 
-;; FIXME: Throw away *systray* and add a tray lookup function
-(defvar *systray*) 
-
 (stumpwm:defcommand stumptray () ()
-  (let* ((display stumpwm:*display*)
-	 (stumpwm-screen (stumpwm:current-screen))
-	 (screen (slot-value stumpwm-screen 'number))
-	 (root-window (xlib:screen-root screen))
-         (mlw (stumpwm::mode-line-window
-               (stumpwm::head-mode-line
-                (stumpwm::current-head))))
-	 (tray (create-tray stumpwm-screen mlw))
-	 (hnd (make-tray-handler tray)))
-    (setf *systray* tray);FIXME
-    (tray-init tray)
-    (map-tray tray)
-    (let ((event-handler (lambda ()
-			   (loop while (ignore-errors
-					 (xlib:process-event stumpwm::*display* :timeout 0 :handler hnd))))))
-      (setf (tray-event-processing-fn tray) event-handler)
-      (stumpwm::add-hook stumpwm:*event-processing-hook*
-			 event-handler))))
+  (unless (current-tray)
+    (let* ((stumpwm-screen (stumpwm:current-screen))
+	   (mlw (stumpwm::mode-line-window
+		 (screen-mode-line stumpwm-screen)))
+	   (tray (create-tray stumpwm-screen mlw))
+	   (hnd (make-tray-handler tray)))
+      (setf (screen-tray stumpwm-screen) tray)
+      (tray-init tray)
+      (map-tray tray)
+      (let ((event-handler (lambda ()
+			     (loop while (ignore-errors
+					   (xlib:process-event stumpwm::*display* :timeout 0 :handler hnd))))))
+	(setf (tray-event-processing-fn tray) event-handler)
+	(stumpwm::add-hook stumpwm:*event-processing-hook*
+			   event-handler)))))
 
 
 (stumpwm:defcommand stumptray-toggle-hidden-icons-visibility () ()
-  (cond ((tray-show-hiwin-p *systray*)
-         (hide-hiwin *systray*))
+  (cond ((tray-show-hiwin-p (current-tray))
+         (hide-hiwin (current-tray)))
         (t
-	 (show-hiwin *systray*)))
-  (tray-update *systray*))
+	 (show-hiwin (current-tray))))
+  (tray-update (current-tray)))
 
 (stumpwm:defcommand systray-selection-right () ()
-  (let ((pos (tray-curpos *systray*)))
-    (show-hiwin *systray*)
-    (setf (tray-curpos *systray*) (1+ (or pos -1)))
-    (tray-update *systray*)))
+  (let* ((tray (current-tray))
+	 (pos (tray-curpos tray)))
+    (show-hiwin tray)
+    (setf (tray-curpos tray) (1+ (or pos -1)))
+    (tray-update tray)))
 
 (stumpwm:defcommand systray-selection-left () ()
-  (let ((pos (tray-curpos *systray*)))
-    (show-hiwin *systray*)
-    (setf (tray-curpos *systray*) (1- (or pos 0)))
-    (tray-update *systray*)))
+  (let* ((tray (current-tray))
+	 (pos (tray-curpos tray)))
+    (show-hiwin tray)
+    (setf (tray-curpos tray) (1- (or pos 0)))
+    (tray-update tray)))
 
 (stumpwm:defcommand systray-toggle-icon-hiding () ()
-  (toggle-icon-hiding *systray* (icon-at-cursor *systray*))
-  (tray-update *systray*))
+  (let ((tray (current-tray)))
+    (toggle-icon-hiding tray (icon-at-cursor tray))
+    (tray-update tray)))
 
 (stumpwm:defcommand systray-move-icon-left () ()
-  (show-hiwin *systray*)
-  (move-icon-left *systray*)
-  (tray-update *systray*))
+  (let ((tray (current-tray)))
+    (show-hiwin tray)
+    (move-icon-left tray)
+    (tray-update tray)))
 
 (stumpwm:defcommand systray-move-icon-right () ()
-  (show-hiwin *systray*)
-  (move-icon-right *systray*)
-  (tray-update *systray*))
+  (let ((tray (current-tray)))
+    (show-hiwin tray)
+    (move-icon-right tray)
+    (tray-update tray)))
 
 (defun tray-window-list (tray)
   (append (tray-viwin tray)
@@ -701,5 +701,3 @@ passed to `xlib:process-event'."
 (defun tray-client-list (tray)
   (mapcar #'xembed:client (tray-socket-list (tray))))
 	  
-  
-
