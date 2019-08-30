@@ -98,8 +98,7 @@
 (defparameter +CurrentTime+ nil)
 
 ;;; Last time received
-(defparameter *timestamp* nil)
-
+(defparameter *timestamp* 0)
 
 (defun set-property-notify (window)
   (setf (window-event-mask window)
@@ -122,7 +121,7 @@
       
 (defun update-timestamp (win &optional timestamp)
   (format t "TIMESTAMP: ~a > ~a = ~a ~%" timestamp *timestamp* (when (and *timestamp* timestamp) (> timestamp *timestamp*)))
-  (when (or (null *timestamp*) (and (numberp timestamp) (> timestamp *timestamp*)))
+  (when (or (zerop *timestamp*) (and (numberp timestamp) (> timestamp *timestamp*)))
     (setf *timestamp* (or timestamp (get-server-time win))))
   *timestamp*)
 
@@ -200,7 +199,7 @@
 		   :window dest-win
 		   :data (list (or timestamp *timestamp*)
 			       (or (and (numberp opcode) opcode) (encode-xembed-message-type opcode))
-			       (encode-xembed-detail detail)
+			       (or (and (numberp detail) detail) (encode-xembed-detail detail))
 			       data1 data2)
 		   :propagate-p nil)
   (dformat 7 "<<< xembed-send~%"))
@@ -209,7 +208,6 @@
   (dformat 7 ">>> xembed-notify~%")
   (xembed-send client-window
 	       :opcode :xembed-embedded-notify
-	       :detail nil
 	       :data1 (window-id embedder-window)
 	       :data2 (or version +XEMBED-VERSION+))
   (dformat 7 "<<< xembed-notify~%"))
